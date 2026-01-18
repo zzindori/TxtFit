@@ -1,11 +1,14 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // (선택) 세로 고정이 필요하면 주석 해제
-   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  // ✅ 세로 고정 (가로 보기 금지)
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+  ]);
 
   runApp(const TxtFitApp());
 }
@@ -16,379 +19,447 @@ class TxtFitApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'txtfit - Knox 텍스트 최적화',
+      title: 'txtfit - Knox 텍스트 최적화 유틸리티 (Custom)',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        primarySwatch: Colors.blue,
         useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFF5F5F5),
+        colorSchemeSeed: const Color(0xFF0078D4),
       ),
-      home: const MainScreen(),
+      home: const TxtFitHome(),
     );
   }
 }
 
-class MainScreen extends StatefulWidget {
-  const MainScreen({super.key});
+class TxtFitHome extends StatefulWidget {
+  const TxtFitHome({super.key});
 
   @override
-  State<MainScreen> createState() => _MainScreenState();
+  State<TxtFitHome> createState() => _TxtFitHomeState();
 }
 
-class _MainScreenState extends State<MainScreen> {
-  // Split 탭 변수
-  final TextEditingController _splitInputController = TextEditingController();
-  final TextEditingController _previewController = TextEditingController();
-  int _limitCount = 3000;
-  List<String> _chunks = [];
-  String _splitStatus = "상태: 대기 중";
+class _TxtFitHomeState extends State<TxtFitHome> with TickerProviderStateMixin {
+  late final TabController _tabController;
 
-  // Clean & Rebuild 탭 변수
-  final TextEditingController _cleanInputController = TextEditingController();
-  final TextEditingController _cleanOutputController = TextEditingController();
+  // --- Split state ---
+  final TextEditingController _splitInputCtrl = TextEditingController();
+  final TextEditingController _copyPreviewCtrl = TextEditingController();
+  int _limit = 3000;
+  String _splitInfo = '상태: 대기 중';
+  List<String> _splitParts = const [];
 
-  // --- [공통] 클립보드 복사 ---
-  void _copyToClip(String text) {
-    if (text.isEmpty) return;
-    Clipboard.setData(ClipboardData(text: text)).then((_) {
-      setState(() {
-        _previewController.text = text;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('클립보드에 복사되었습니다!'),
-          duration: Duration(milliseconds: 800),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    });
-  }
+  // --- Clean state ---
+  final TextEditingController _cleanInputCtrl = TextEditingController();
+  final TextEditingController _cleanOutputCtrl = TextEditingController();
 
-  // --- [Split] 클립보드 붙여넣기 ---
-  Future<void> _pasteToSplitInput() async {
-    final data = await Clipboard.getData('text/plain');
-    final text = data?.text ?? '';
-    if (text.isEmpty) return;
+  // Scroll controllers
+  final ScrollController _splitScrollCtrl = ScrollController();
+  final ScrollController _cleanScrollCtrl = ScrollController();
 
-    _splitInputController.text = text;
-    _splitInputController.selection = TextSelection.collapsed(offset: text.length);
-
-    setState(() {
-      _splitStatus = "클립보드에서 붙여넣기 완료 (${text.length}자)";
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('원문 입력칸에 붙여넣었습니다!'),
-        duration: Duration(milliseconds: 800),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
-  // --- [Split] 로직 ---
-  void _runSplit() {
-    String text = _splitInputController.text;
-    if (text.isEmpty) return;
-
-    int chunkSize = _limitCount - 20; // 헤더[n/m] 여유분 제외
-    List<String> tempChunks = [];
-
-    for (int i = 0; i < text.length; i += chunkSize) {
-      int end = (i + chunkSize < text.length) ? i + chunkSize : text.length;
-      tempChunks.add(text.substring(i, end));
-    }
-
-    setState(() {
-      _chunks = tempChunks;
-      _splitStatus = "전체: ${text.length}자 | 제한: $_limitCount자 | 조각: ${_chunks.length}개";
-    });
-  }
-
-  void _resetSplit() {
-    setState(() {
-      _splitInputController.clear();
-      _previewController.clear();
-      _chunks = [];
-      _splitStatus = "상태: 초기화됨";
-    });
-  }
-
-  // --- [Clean & Rebuild] 로직 ---
-  void _runCleanRebuild() {
-    String rawText = _cleanInputController.text;
-    if (rawText.isEmpty) return;
-
-    List<String> lines = rawText.split('\n');
-    List<String> cleanedLines = [];
-
-    // Knox 특유의 [이름] 날짜 패턴 제거용 정규식
-    final metaPattern = RegExp(r'^\[.*?\]\s\d{4}[./-]\d{2}[./-]\d{2}.*');
-    final headerPattern = RegExp(r'^\[\d+/\d+\]');
-
-    for (var line in lines) {
-      String trimmedLine = line.trim();
-      if (trimmedLine.isEmpty) continue;
-
-      if (!metaPattern.hasMatch(trimmedLine)) {
-        String content = trimmedLine.replaceAll(headerPattern, '').trim();
-        if (content.isNotEmpty) cleanedLines.add(content);
-      }
-    }
-
-    setState(() {
-      _cleanOutputController.text = cleanedLines.join('\n');
-    });
-  }
-
-  void _resetClean() {
-    setState(() {
-      _cleanInputController.clear();
-      _cleanOutputController.clear();
-    });
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
   }
 
   @override
   void dispose() {
-    _splitInputController.dispose();
-    _previewController.dispose();
-    _cleanInputController.dispose();
-    _cleanOutputController.dispose();
+    _tabController.dispose();
+    _splitInputCtrl.dispose();
+    _copyPreviewCtrl.dispose();
+    _cleanInputCtrl.dispose();
+    _cleanOutputCtrl.dispose();
+    _splitScrollCtrl.dispose();
+    _cleanScrollCtrl.dispose();
     super.dispose();
+  }
+
+  // ---------- Clipboard ----------
+  Future<void> _copyToClipboard(String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    setState(() {
+      _copyPreviewCtrl.text = text;
+    });
+  }
+
+  // ---------- Split logic (limit 초과 방지 / [i/n]\n 헤더 포함) ----------
+  void _runSplit() {
+    final text = _splitInputCtrl.text;
+    if (text.isEmpty) {
+      setState(() {
+        _splitInfo = '상태: 원문이 비어있습니다.';
+        _splitParts = const [];
+      });
+      return;
+    }
+
+    final limit = _limit;
+    final roughChunk = math.max(1, limit - 50);
+    final roughParts = <String>[];
+    for (int i = 0; i < text.length; i += roughChunk) {
+      roughParts.add(text.substring(i, math.min(i + roughChunk, text.length)));
+    }
+    int n = roughParts.length;
+
+    List<String> parts = [];
+    int i = 0;
+    int part = 1;
+
+    while (i < text.length) {
+      final header = '[$part/$n]\n';
+      final allowed = math.max(1, limit - header.length);
+      final end = math.min(i + allowed, text.length);
+      parts.add(text.substring(i, end));
+      i = end;
+      part++;
+    }
+
+    // 보정 1회
+    if (parts.length != n) {
+      n = parts.length;
+      final parts2 = <String>[];
+      i = 0;
+      part = 1;
+      while (i < text.length) {
+        final header = '[$part/$n]\n';
+        final allowed = math.max(1, limit - header.length);
+        final end = math.min(i + allowed, text.length);
+        parts2.add(text.substring(i, end));
+        i = end;
+        part++;
+      }
+      parts = parts2;
+    }
+
+    setState(() {
+      _splitParts = parts;
+      _splitInfo =
+          '전체: ${text.length.toString()}자 | 제한: $limit자 | 조각: ${parts.length}개';
+    });
+
+    // 결과 영역 맨 위로
+    _splitScrollCtrl.animateTo(
+      0,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+    );
+  }
+
+  void _resetSplit() {
+    setState(() {
+      _splitInputCtrl.clear();
+      _copyPreviewCtrl.clear();
+      _splitParts = const [];
+      _splitInfo = '상태: 초기화됨';
+    });
+  }
+
+  // ---------- Clean & Rebuild logic (메타/파트헤더 제거 + 들여쓰기 보존) ----------
+  void _runCleanRebuild() {
+    final rawText = _cleanInputCtrl.text;
+    if (rawText.isEmpty) return;
+
+    final lines = rawText.split('\n');
+      final cleaned = <String>[]; // Initialize cleaned list
+
+    final metaPattern =
+        RegExp(r'^\[.*?\]\s\d{4}[./-]\d{2}[./-]\d{2}.*'); // probe 기준
+    final partHeaderOnlyPattern = RegExp(r'^\[\d+/\d+\]\s*$'); // 단독 라인만
+
+    const keepBlankLines = true;
+
+    for (int i = 0; i < lines.length; i++) {
+      final original = lines[i].replaceFirst(RegExp(r'\s+$'), ''); // rstrip
+      final probe = original.replaceFirst(RegExp(r'^\s+'), ''); // lstrip
+
+      if (probe.isEmpty) {
+        if (keepBlankLines) cleaned.add('');
+        continue;
+      }
+
+        if (metaPattern.hasMatch(probe)) {
+          continue;
+        }
+
+        if (partHeaderOnlyPattern.hasMatch(probe)) {
+          String mergedResult = '';
+          final prevIdx = cleaned.lastIndexWhere((e) => e.trim().isNotEmpty);
+          final nextIdx = i + 1;
+          final hasPrev = prevIdx != -1;
+          final hasNext = nextIdx < lines.length && lines[nextIdx].trim().isNotEmpty;
+          if (hasPrev && hasNext) {
+            final prev = cleaned[prevIdx];
+            final nextLine = lines[nextIdx].replaceFirst(RegExp(r'^\s+'), '');
+            mergedResult = prev + nextLine;
+            cleaned[prevIdx] = mergedResult;
+            i++; // 다음 줄은 이미 붙였으니 건너뜀
+          }
+          continue;
+        }
+
+      cleaned.add(original); // 들여쓰기 보존
+    }
+
+    setState(() {
+      _cleanOutputCtrl.text = cleaned.join('\n');
+    });
+
+    _cleanScrollCtrl.animateTo(
+      0,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+    );
+  }
+
+  Future<void> _copyCleanAll() async {
+    await _copyToClipboard(_cleanOutputCtrl.text);
+  }
+
+  // ---------- UI helpers ----------
+  Widget _sectionTitle(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 6),
+      child: Text(
+        text,
+        style: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+
+  Widget _primaryButton({
+    required String text,
+    required VoidCallback onPressed,
+    Color? background,
+  }) {
+    final bg = background ?? const Color(0xFF0078D4);
+    return SizedBox(
+      height: 44,
+      child: ElevatedButton(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: bg,
+          foregroundColor: Colors.white,
+          textStyle: const TextStyle(fontWeight: FontWeight.w700),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+        onPressed: onPressed,
+        child: Text(text),
+      ),
+    );
+  }
+
+  Widget _secondaryButton({
+    required String text,
+    required VoidCallback onPressed,
+  }) {
+    return SizedBox(
+      height: 44,
+      child: OutlinedButton(
+        style: OutlinedButton.styleFrom(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+        onPressed: onPressed,
+        child: Text(text),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        // ✅ 탭/상단 압축용 + 키보드로 인한 과도한 레이아웃 축소 방지에 도움
-        resizeToAvoidBottomInset: false,
-        
-        appBar: AppBar(
-          toolbarHeight: 44, // ✅ 타이틀 영역 얇게
-          title: const Text(
-            'T x t F i t',
-            style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 2, fontSize: 16),
-          ),
-          centerTitle: true,
-          bottom: PreferredSize(
-            preferredSize: const Size.fromHeight(40), // ✅ 탭 영역 얇게
-            child: TabBar(
-              dividerHeight: 0,
-              indicatorWeight: 2,
-              labelPadding: const EdgeInsets.symmetric(horizontal: 12),
-              labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-              unselectedLabelStyle: const TextStyle(fontSize: 13),
-              tabs: const [
-                Tab(text: "Split (보내기)"), // ✅ 아이콘 제거
-                Tab(text: "Clean (가져오기)"),
-              ],
-            ),
-          ),
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+
+    return Scaffold(
+      // ✅ 화면이 키보드 때문에 "리사이즈" 되지 않게 고정
+      resizeToAvoidBottomInset: false,
+      appBar: AppBar(
+        centerTitle: true,
+        title: const Text(
+          'T x t F i t',
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22),
         ),
-        body: TabBarView(
-          children: [
-            _buildSplitTab(),
-            _buildCleanTab(),
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(text: '문장 분할'),
+            Tab(text: '문자열 결합'),
           ],
         ),
-        bottomNavigationBar: Container(
-          height: 22, // ✅ 하단 바 얇게
-          alignment: Alignment.center,
-          color: Colors.white,
-          child: const Text(
-            "“글자 수 제한? txtfit으로 내 마음대로.”",
-            style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic, fontSize: 10),
+      ),
+      body: SafeArea(
+        // ✅ 키보드가 올라와도 레이아웃 자체는 고정, 대신 아래 패딩으로 가려지는 걸 방지
+        child: AnimatedPadding(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          padding: EdgeInsets.only(bottom: bottomInset),
+          child: TabBarView(
+            controller: _tabController,
+            children: [
+              _buildSplitTab(),
+              _buildCleanTab(),
+            ],
+          ),
+        ),
+      ),
+      bottomNavigationBar: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
+        child: Text(
+          '“글자 수 제한? txtfit으로 내 마음대로.”',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: Colors.grey.shade600,
+            fontStyle: FontStyle.italic,
           ),
         ),
       ),
     );
   }
 
-  // --- [UI] Split 탭 ---
   Widget _buildSplitTab() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10), // ✅ 전체 패딩 축소
+    return SingleChildScrollView(
+      controller: _splitScrollCtrl,
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // ✅ 제한 설정(컴팩트)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6), // ✅ 상하 최소화
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 3)],
+          // 분할 설정
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(
+                children: [
+                  const Text('제한 글자 수: ',
+                      style: TextStyle(fontWeight: FontWeight.w700)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Slider(
+                      min: 100,
+                      max: 10000,
+                      divisions: 99,
+                      value: _limit.toDouble(),
+                      label: '$_limit',
+                      onChanged: (v) =>
+                          setState(() => _limit = (v ~/ 100) * 100),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 72,
+                    child: Text(
+                      '$_limit',
+                      textAlign: TextAlign.end,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ],
+              ),
             ),
+          ),
+
+          Padding(
+            padding: const EdgeInsets.only(top: 8, bottom: 6),
             child: Row(
               children: [
-                const Text("제한 설정", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                const Spacer(),
-                IconButton(
-                  onPressed: () => setState(() => _limitCount = (_limitCount > 100) ? _limitCount - 100 : _limitCount),
-                  icon: const Icon(Icons.remove_circle_outline, color: Colors.redAccent, size: 20),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                  visualDensity: VisualDensity.compact,
+                const Text(
+                  '1. 원문 입력',
+                  style: TextStyle(fontWeight: FontWeight.w700),
                 ),
+                Expanded(child: SizedBox()),
                 SizedBox(
-                  width: 70,
-                  child: Center(
-                    child: Text("$_limitCount자", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+                  height: 32,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Color(0xFF0078D4),
+                      foregroundColor: Colors.white,
+                      textStyle: const TextStyle(fontWeight: FontWeight.w700),
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    onPressed: () async {
+                      final data = await Clipboard.getData('text/plain');
+                      if (data != null && data.text != null) {
+                        _splitInputCtrl.text = data.text!;
+                      }
+                    },
+                    child: const Text('붙여넣기'),
                   ),
-                ),
-                IconButton(
-                  onPressed: () => setState(() => _limitCount = (_limitCount < 10000) ? _limitCount + 100 : _limitCount),
-                  icon: const Icon(Icons.add_circle_outline, color: Colors.blueAccent, size: 20),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                  visualDensity: VisualDensity.compact,
                 ),
               ],
             ),
           ),
-
-          const SizedBox(height: 8),
-
-          // ✅ 원문 입력 헤더 + 붙여넣기 버튼 추가
-          Row(
-            children: [
-              const Text(" 1. 원문 입력", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-              const Spacer(),
-              TextButton.icon(
-                onPressed: _pasteToSplitInput,
-                icon: const Icon(Icons.content_paste, size: 18),
-                label: const Text("붙여넣기", style: TextStyle(fontSize: 13)),
-                style: TextButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  visualDensity: VisualDensity.compact,
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 6),
-
-          Expanded(
-            flex: 3,
-            child: TextField(
-              controller: _splitInputController,
-              maxLines: null,
-              expands: true,
-              decoration: InputDecoration(
-                hintText: "긴 텍스트를 입력하거나, 오른쪽 '붙여넣기' 버튼을 누르세요...",
-                fillColor: Colors.white,
-                filled: true,
-                isDense: true, // ✅ 내부 높이 조금 줄이기
-                contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-              ),
+          TextField(
+            controller: _splitInputCtrl,
+            maxLines: 5,
+            decoration: const InputDecoration(
+              hintText: '여기에 긴 텍스트를 붙여넣으세요.',
+              border: OutlineInputBorder(),
             ),
           ),
 
-          const SizedBox(height: 8),
-
+          const SizedBox(height: 10),
           Row(
             children: [
               Expanded(
-                child: ElevatedButton(
+                child: _primaryButton(
+                  text: 'Split 실행',
                   onPressed: _runSplit,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 10), // ✅ 버튼 높이 축소
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  child: const Text("Split 실행", style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
                 ),
               ),
-              const SizedBox(width: 8),
-              OutlinedButton(
-                onPressed: _resetSplit,
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-                  visualDensity: VisualDensity.compact,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _secondaryButton(
+                  text: '초기화',
+                  onPressed: _resetSplit,
                 ),
-                child: const Text("초기화", style: TextStyle(fontSize: 13)),
               ),
             ],
           ),
 
-          const SizedBox(height: 6),
+          const SizedBox(height: 10),
+          Text(_splitInfo),
 
-          Center(
-            child: Text(
-              _splitStatus,
-              style: const TextStyle(fontSize: 11.5, color: Colors.blueGrey),
+          const SizedBox(height: 14),
+          _sectionTitle('2. 분할 결과 (버튼 클릭 시 복사)'),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: _splitParts.isEmpty
+                  ? const Text('결과가 없습니다. Split 실행 후 버튼이 생성됩니다.')
+                  : Column(
+                      children: List.generate(_splitParts.length, (idx) {
+                        final partNo = idx + 1;
+                        final header = '[$partNo/${_splitParts.length}]\n';
+                        final fullText = header + _splitParts[idx];
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: SizedBox(
+                            height: 36,
+                            width: double.infinity,
+                            child: OutlinedButton(
+                              onPressed: () => _copyToClipboard(fullText),
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  'Part $partNo 복사 (${fullText.length}자)',
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                    ),
             ),
           ),
 
-          const SizedBox(height: 6),
-
-          const Text(" 2. 분할 결과 (클릭 시 복사)", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-
-          const SizedBox(height: 6),
-
-          Expanded(
-            flex: 3,
-            child: _chunks.isEmpty
-                ? Container(
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.03),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Center(child: Text("결과가 여기에 표시됩니다.")),
-                  )
-                : ListView.builder(
-                    itemCount: _chunks.length,
-                    itemBuilder: (context, index) {
-                      String fullText = "[${index + 1}/${_chunks.length}]\n${_chunks[index]}";
-                      return Card(
-                        elevation: 0,
-                        margin: const EdgeInsets.symmetric(vertical: 3),
-                        shape: RoundedRectangleBorder(
-                          side: const BorderSide(color: Colors.blue, width: 0.5),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: ListTile(
-                          dense: true, // ✅ 리스트 높이 줄이기
-                          visualDensity: VisualDensity.compact,
-                          title: Text("Part ${index + 1} (${fullText.length}자)", style: const TextStyle(fontSize: 13)),
-                          trailing: const Icon(Icons.copy_all, size: 18, color: Colors.blue),
-                          onTap: () => _copyToClip(fullText),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-
-          const SizedBox(height: 6),
-
-          const Text(" 최근 복사 내용 프리뷰", style: TextStyle(fontSize: 11, color: Colors.grey)),
-
-          const SizedBox(height: 6),
-
-          // ✅ 프리뷰 상하 넓게(멀티라인)
-          SizedBox(
-            height: 90,
-            child: TextField(
-              controller: _previewController,
-              readOnly: true,
-              maxLines: null,
-              expands: true,
-              style: const TextStyle(fontSize: 12),
-              decoration: InputDecoration(
-                fillColor: Colors.grey[200],
-                filled: true,
-                isDense: true,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide.none,
+          const SizedBox(height: 14),
+          _sectionTitle('방금 복사된 내용 프리뷰'),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: TextField(
+                controller: _copyPreviewCtrl,
+                readOnly: true,
+                maxLines: 6,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
                 ),
-                contentPadding: const EdgeInsets.all(10),
               ),
             ),
           ),
@@ -397,89 +468,137 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  // --- [UI] Clean 탭 ---
   Widget _buildCleanTab() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10), // ✅ 전체 패딩 축소
+    return SingleChildScrollView(
+      controller: _cleanScrollCtrl,
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text(" 1. Knox 대화 내용 입력", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-
-          const SizedBox(height: 6),
-
-          Expanded(
-            child: TextField(
-              controller: _cleanInputController,
-              maxLines: null,
-              expands: true,
-              decoration: InputDecoration(
-                fillColor: Colors.white,
-                filled: true,
-                isDense: true,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                child: _sectionTitle('1. 내용 블럭 입력'),
               ),
-            ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Color(0xFF1976D2),
+                  foregroundColor: Colors.white,
+                  textStyle: const TextStyle(fontWeight: FontWeight.w600),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  minimumSize: const Size(0, 36),
+                  elevation: 0,
+                ),
+                onPressed: () async {
+                  final data = await Clipboard.getData('text/plain');
+                  if (data != null && data.text != null && data.text!.trim().isNotEmpty) {
+                    final current = _cleanInputCtrl.text;
+                    final toAppend = data.text!;
+                    String newText;
+                    if (current.trim().isEmpty) {
+                      newText = toAppend;
+                    } else {
+                      newText = "${current.trimRight()}\n$toAppend";
+                    }
+                    setState(() {
+                      _cleanInputCtrl.text = newText;
+                      _cleanInputCtrl.selection = TextSelection.collapsed(offset: newText.length);
+                    });
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('블럭이 붙여넣기 되었습니다.'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  }
+                },
+                child: const Text('블럭 붙여넣기'),
+              ),
+            ],
+          ),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final halfHeight = MediaQuery.of(context).size.height * 0.22;
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: SizedBox(
+                      height: halfHeight,
+                      child: TextField(
+                        controller: _cleanInputCtrl,
+                        expands: true,
+                        maxLines: null,
+                        minLines: null,
+                        keyboardType: TextInputType.multiline,
+                        decoration: const InputDecoration(
+                          hintText: '블럭을 한 번씩에 붙여넣으세요. (문자열 블럭 입력)',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
 
-          const SizedBox(height: 8),
-
+          const SizedBox(height: 10),
           Row(
             children: [
               Expanded(
-                child: ElevatedButton(
-                  onPressed: _runCleanRebuild,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blueGrey,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 10), // ✅ 버튼 높이 축소
-                    visualDensity: VisualDensity.compact,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                  child: const Text("정제 실행", style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                child: _primaryButton(
+                  text: '정제 실행',
+                  onPressed: () {
+                    _runCleanRebuild();
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('정제가 완료되었습니다.'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  },
+                  background: const Color(0xFF2E7D32),
                 ),
               ),
-              const SizedBox(width: 8),
-              IconButton(
-                onPressed: _resetClean,
-                icon: const Icon(Icons.refresh_rounded),
-                visualDensity: VisualDensity.compact,
-                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-              ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 10),
               Expanded(
-                child: ElevatedButton(
-                  onPressed: () => _copyToClip(_cleanOutputController.text),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    visualDensity: VisualDensity.compact,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                  child: const Text("전체 복사", style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                child: _secondaryButton(
+                  text: '결과 전체 복사',
+                  onPressed: () async {
+                    await _copyCleanAll();
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('결과가 복사되었습니다.'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  },
                 ),
               ),
             ],
           ),
 
-          const SizedBox(height: 8),
-
-          const Text(" 2. 정제 결과 (이름/날짜 제거됨)", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-
-          const SizedBox(height: 6),
-
-          Expanded(
-            child: TextField(
-              controller: _cleanOutputController,
-              readOnly: true,
-              maxLines: null,
-              expands: true,
-              decoration: InputDecoration(
-                fillColor: Colors.blue[50],
-                filled: true,
-                isDense: true,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+          const SizedBox(height: 14),
+          _sectionTitle('2. 정제 결과'),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: TextField(
+                controller: _cleanOutputCtrl,
+                readOnly: true,
+                maxLines: 12,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                ),
               ),
             ),
           ),
